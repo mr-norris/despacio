@@ -1,0 +1,34 @@
+name: Back up spreadsheet
+
+# Once a day, saves every tab of the Mirror spreadsheet as CSV in data/source/ and
+# commits it if anything changed. Git history is the backup: every day's version of
+# the community sheet can be seen, compared, and restored.
+on:
+  schedule:
+    - cron: '40 11 * * *'   # daily, about 4:40am Pacific
+  workflow_dispatch:         # "Run workflow" button for a backup right now
+
+permissions:
+  contents: write
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install openpyxl
+      - run: python scripts/backup_sheet.py
+      - name: Commit if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898333+github-actions[bot]@users.noreply.github.com"
+          git add -A data/source
+          if git diff --cached --quiet; then
+            echo "No changes since the last backup."
+          else
+            git commit -m "Spreadsheet backup $(date -u +%F)"
+            git push
+          fi

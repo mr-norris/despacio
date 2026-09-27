@@ -9,6 +9,7 @@
  *      /d/ and /edit in its URL). You need at least view access to it.
  *   3. Services (+) → YouTube Data API v3 → Add. Save, reload the sheet.
  *   4. Setlist tools → Set up automatic updates.
+ *   5. Setlist tools → Set up mirror and backups (see "0. Mirror and backups" below).
  */
 
 const CONFIG = {
@@ -94,9 +95,15 @@ function onOpen() {
     .addItem('Show last sync result', 'showLastSync')
     .addItem('Report megalist duplicates', 'reportMegalistDuplicates')
     .addItem('Report shared links', 'reportSharedLinks')
+    .addItem('Report All songs without links', 'reportMissingMasterLinks')
     .addSeparator()
     .addItem('Build / refresh master song list', 'buildMasterList')
     .addItem('Find YouTube links now', 'fillYouTubeLinks')
+    .addSeparator()
+    .addItem('Set up mirror and backups', 'setUpMirror')
+    .addItem('Mirror community sheet now', 'mirrorNow')
+    .addItem('Accept upstream changes (override guard)', 'acceptUpstreamChanges')
+    .addItem('Save full Drive backup now', 'weeklyBackup')
     .addSeparator()
     .addItem('Set up automatic updates', 'setUpTriggers')
     .addItem('Stop automatic updates', 'removeTriggers')
@@ -158,6 +165,175 @@ function withLock_(fn) {
   try { return fn(); } finally { lock.releaseLock(); }
 }
 
+/* ---------- 0. Mirror and backups ---------- */
+
+// The Mirror is a spreadsheet you own holding an exact, plain-text copy of every tab in
+// the community sheet. Nothing edits it by hand, and everything else reads from it, so
+// a bad edit or a deleted tab upstream can't reach the site before you've seen it.
+//   Guardrails: a tab that disappears upstream, or loses more than MIRROR_MAX_DROP of its
+//   rows, is NOT overwritten. The last good copy stays, and you get an email.
+//   To accept such a change on purpose, run Setlist tools → Accept upstream changes.
+// Backups: a full Drive copy every week (the newest MIRROR_KEEP_COPIES are kept), and the
+// GitHub "Back up spreadsheet" workflow saves the Mirror as CSV files daily, with history.
+
+const MIRROR_MAX_DROP = 0.2;   // 20%
+const MIRROR_MIN_ROWS = 20;    // smaller tabs aren't guarded (too noisy)
+const MIRROR_KEEP_COPIES = 12; // weekly Drive copies to keep (about 3 months)
+const MIRROR_LOG = 'Mirror Log';
+
+const props_ = () => PropertiesService.getScriptProperties();
+const mirrorId_ = () => props_().getProperty('MIRROR_ID');
+
+// Where every reader gets the community data: the Mirror once it exists.
+function sourceBook_() {
+  return SpreadsheetApp.openById(mirrorId_() || CONFIG.SOURCE_ID);
+}
+
+const filledRows_ = values => values.filter(r => r.some(c => String(c).trim() !== '')).length;
+const hash_ = values => Utilities.base64Encode(
+  Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, JSON.stringify(values)));
+
+// Copies every community tab into the Mirror. Returns { changed, issues }.
+function refreshMirror_(force) {
+  const id = mirrorId_();
+  if (!id) return { changed: [], issues: [] };
+  const community = SpreadsheetApp.openById(CONFIG.SOURCE_ID);
+  const mirror = SpreadsheetApp.openById(id);
+  const p = props_();
+  const changed = [], issues = [];
+  const upstream = new Set();
+
+  community.getSheets().forEach(s => {
+    const name = s.getName();
+    upstream.add(name);
+    const values = s.getDataRange().getDisplayValues(); // exactly as fans see it
+    const h = hash_(values);
+    let m = mirror.getSheetByName(name);
+    if (!force && m && p.getProperty(`hash:${name}`) === h) return; // unchanged since last copy
+
+    if (m && !force) {
+      const before = filledRows_(m.getDataRange().getDisplayValues());
+      const after = filledRows_(values);
+      if (before >= MIRROR_MIN_ROWS && after < before * (1 - MIRROR_MAX_DROP)) {
+        issues.push(`"${name}" dropped from ${before} to ${after} rows. Kept the last good copy.`);
+        return;
+      }
+    }
+    if (!m) m = mirror.insertSheet(name);
+    m.clear();
+    if (values.length && values[0].length) {
+      const range = m.getRange(1, 1, values.length, values[0].length);
+      range.setNumberFormat('@'); // plain text: "007" and "3/5" stay as written
+      range.setValues(values);
+    }
+    p.setProperty(`hash:${name}`, h);
+    changed.push(name);
+  });
+
+  // Tabs that vanished upstream stay in the Mirror (and so on the site) until accepted.
+  mirror.getSheets().forEach(m => {
+    const name = m.getName();
+    if (upstream.has(name)) return;
+    if (force) {
+      if (mirror.getSheets().length > 1) mirror.deleteSheet(m);
+      p.deleteProperty(`hash:${name}`);
+    } else if (name !== 'Sheet1' || m.getLastRow() > 0) {
+      issues.push(`"${name}" is gone from the community sheet. Kept the last good copy.`);
+    }
+  });
+
+  logMirror_(changed, issues);
+  alertIssues_(issues);
+  return { changed: changed, issues: issues };
+}
+
+function logMirror_(changed, issues) {
+  if (!changed.length && !issues.length) return;
+  const sh = sheet_(MIRROR_LOG, ['When', 'Tabs updated', 'Warnings']);
+  sh.insertRowAfter(1);
+  sh.getRange(2, 1, 1, 3).setValues([[new Date(), changed.join(', '), issues.join('\n')]]);
+  if (sh.getLastRow() > 501) sh.deleteRows(502, sh.getLastRow() - 501); // newest 500
+}
+
+// Emails you when the warnings change, not every hour they persist.
+function alertIssues_(issues) {
+  const p = props_();
+  const key = issues.join('\n');
+  if (key === (p.getProperty('lastIssues') || '')) return;
+  p.setProperty('lastIssues', key);
+  if (!issues.length) return;
+  const to = Session.getEffectiveUser().getEmail();
+  if (!to) return;
+  MailApp.sendEmail(to, 'Despacio Tracklists: community sheet changed unexpectedly',
+    issues.join('\n') + '\n\nThe site keeps showing the last good copy. If the change is intended, ' +
+    'open your links sheet and run Setlist tools → Accept upstream changes.\n\n' +
+    SpreadsheetApp.getActive().getUrl());
+}
+
+// One-time setup: creates the Mirror, fills it, and turns on the weekly Drive backup.
+function setUpMirror() {
+  let id = mirrorId_();
+  if (!id) {
+    id = SpreadsheetApp.create('Despacio Song IDs – Mirror').getId();
+    props_().setProperty('MIRROR_ID', id);
+  }
+  withLock_(() => {
+    refreshMirror_(true);
+    const mirror = SpreadsheetApp.openById(id);
+    const blank = mirror.getSheetByName('Sheet1');
+    if (blank && mirror.getSheets().length > 1 && blank.getLastRow() === 0) mirror.deleteSheet(blank);
+  });
+  weeklyBackup();
+  setUpTriggers();
+  SpreadsheetApp.getUi().alert(
+    `The Mirror is ready:\n${SpreadsheetApp.openById(id).getUrl()}\n\n` +
+    'The site now reads from it, and a first full backup is in your Drive under ' +
+    '"Despacio Song IDs backups".\n\nOne more step for the daily GitHub backup: open the Mirror, ' +
+    'File → Share → Publish to web, choose "Entire document" and "Microsoft Excel (.xlsx)", ' +
+    'click Publish, and copy the link.');
+}
+
+function mirrorNow() {
+  if (!mirrorId_()) { SpreadsheetApp.getUi().alert('Run Setlist tools → Set up mirror and backups first.'); return; }
+  const r = withLock_(() => refreshMirror_(false));
+  if (!r) return notify_('Busy with another run. Try again in a minute.');
+  SpreadsheetApp.getUi().alert(
+    (r.changed.length ? `Updated: ${r.changed.join(', ')}` : 'No tabs changed.') +
+    (r.issues.length ? `\n\nWarnings:\n${r.issues.join('\n')}` : ''));
+}
+
+// Copies everything as it is now, ignoring the guardrails, then syncs.
+function acceptUpstreamChanges() {
+  const ui = SpreadsheetApp.getUi();
+  const ok = ui.alert('Accept upstream changes?',
+    'This copies the community sheet exactly as it is right now, including any shrunken or deleted tabs.',
+    ui.ButtonSet.OK_CANCEL);
+  if (ok !== ui.Button.OK) return;
+  withLock_(() => refreshMirror_(true));
+  syncFromSource();
+}
+
+// A full copy of the community sheet in your Drive, formatting and all. Runs weekly.
+function weeklyBackup() {
+  const p = props_();
+  let folder;
+  try { folder = DriveApp.getFolderById(p.getProperty('BACKUP_FOLDER')); }
+  catch (e) {
+    folder = DriveApp.createFolder('Despacio Song IDs backups');
+    p.setProperty('BACKUP_FOLDER', folder.getId());
+  }
+  const stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  DriveApp.getFileById(CONFIG.SOURCE_ID).makeCopy(`Despacio Song IDs – ${stamp}`, folder);
+
+  // Keep the newest copies; older ones go to the Drive trash (recoverable for 30 days).
+  const files = [];
+  const it = folder.getFiles();
+  while (it.hasNext()) files.push(it.next());
+  files.sort((a, b) => b.getDateCreated() - a.getDateCreated())
+    .slice(MIRROR_KEEP_COPIES).forEach(f => f.setTrashed(true));
+  notify_(`Saved a full copy to Drive: Despacio Song IDs – ${stamp}`);
+}
+
 /* ---------- 1. Sync ---------- */
 
 // Mirrors every community tab into Tracks, matched by tab + Unique ID.
@@ -166,7 +342,11 @@ function withLock_(fn) {
 // again only if their artist or title changes (e.g. an Unknown gets identified).
 function syncFromSource() {
   withLock_(() => {
-    const src = SpreadsheetApp.openById(CONFIG.SOURCE_ID);
+    // Refresh the Mirror first, then read from it. If the community sheet can't be
+    // reached, the site keeps building from the last copy.
+    try { refreshMirror_(false); }
+    catch (e) { alertIssues_([`Couldn't read the community sheet: ${e.message}. Using the last copy.`]); }
+    const src = sourceBook_();
     const tracks = sheet_(CONFIG.TRACKS, CONFIG.TRACK_HEADERS);
 
     const prev = {};
@@ -431,7 +611,7 @@ function showLastSync() {
 // Writes a "Megalist Report" tab: how many entries carry each version tag, and every
 // group of entries the site would merge into one song. Read-only on the community sheet.
 function reportMegalistDuplicates() {
-  const src = SpreadsheetApp.openById(CONFIG.SOURCE_ID);
+  const src = sourceBook_();
   const tab = src.getSheets().find(s => String(s.getName()).trim().toLowerCase() === 'megalist');
   if (!tab) { SpreadsheetApp.getUi().alert('No tab called "megalist" in the community sheet.'); return; }
 
@@ -582,6 +762,56 @@ function masterList_() {
   const links = {};
   rows.forEach(r => { if (r.url) links[masterKey_(r.artist, r.title)] = r.url; });
   return { links: links, rows: rows };
+}
+
+/* ---------- All songs without links ---------- */
+
+// Writes an "All Songs Missing Links" tab: every All songs row with no link, and why.
+//   Waiting for search - not searched yet; the nightly search gets to it (90 a night,
+//                        residencies first, then All songs)
+//   No match           - searched, YouTube had nothing suitable; add one with Add link
+//   Possible match     - a residency has the same title with a link, but the artist is
+//                        spelled differently, so it isn't shared automatically
+// Read-only: nothing is changed.
+function reportMissingMasterLinks() {
+  const tracks = SpreadsheetApp.getActive().getSheetByName(CONFIG.TRACKS);
+  if (!tracks) { SpreadsheetApp.getUi().alert('Run a sync first.'); return; }
+  const data = rows_(tracks);
+  const titleOnly = t => normSong_(baseTitle_(t));
+
+  // Linked residency songs, by title alone, to spot artist-spelling differences.
+  const byTitle = {};
+  data.forEach(r => {
+    const u = String(r[T.YouTube]).trim();
+    if (!u || String(r[T.gid]) === 'master' || isUnknown_(r[T['Song Title']])) return;
+    const k = titleOnly(r[T['Song Title']]);
+    if (k && !byTitle[k]) byTitle[k] = r;
+  });
+
+  const out = [], counts = { 'Waiting for search': 0, 'No match': 0, 'Possible match': 0 };
+  data.forEach(r => {
+    if (String(r[T.gid]) !== 'master' || String(r[T.YouTube]).trim()) return;
+    const near = byTitle[titleOnly(r[T['Song Title']])];
+    const why = near ? 'Possible match'
+      : r[T.Status] === CONFIG.STATUS.NO_MATCH ? 'No match' : 'Waiting for search';
+    counts[why]++;
+    out.push([r[T.Artist], r[T['Song Title']], why,
+      near ? `${near[T.Artist]} – ${near[T['Song Title']]} (${near[T.Appearance]})` : '',
+      near ? String(near[T.YouTube]).trim() : '']);
+  });
+  const order = { 'Possible match': 0, 'No match': 1, 'Waiting for search': 2 };
+  out.sort((a, b) => order[a[2]] - order[b[2]]);
+
+  const sh = sheet_('All Songs Missing Links', ['Artist', 'Title', 'Why', 'Residency song with the same title', 'Its link']);
+  sh.getRange(2, 1, Math.max(sh.getLastRow() - 1, 1), 5).clearContent();
+  if (out.length) sh.getRange(2, 1, out.length, 5).setValues(out);
+  const nights = Math.ceil(counts['Waiting for search'] / CONFIG.YT_SEARCHES_PER_RUN);
+  SpreadsheetApp.getUi().alert(`${out.length} All songs rows have no link:\n\n` +
+    `${counts['Possible match']} possible matches (artist spelled differently at a residency)\n` +
+    `${counts['No match']} searched with no YouTube result\n` +
+    `${counts['Waiting for search']} waiting for the nightly search` +
+    (nights ? ` (about ${nights} night${nights === 1 ? '' : 's'} at ${CONFIG.YT_SEARCHES_PER_RUN} a night)` : '') +
+    `\n\nSee the All Songs Missing Links tab.`);
 }
 
 /* ---------- Shared link report ---------- */
@@ -879,13 +1109,15 @@ function setUpTriggers() {
   removeTriggers(true);
   ScriptApp.newTrigger('syncFromSource').timeBased().everyHours(1).create();
   ScriptApp.newTrigger('fillYouTubeLinks').timeBased().everyDays(1).atHour(3).create();
+  if (mirrorId_()) ScriptApp.newTrigger('weeklyBackup').timeBased().onWeekDay(ScriptApp.WeekDay.MONDAY).atHour(4).create();
   syncFromSource();
-  notify_('Syncing every hour and searching YouTube every night around 3am.');
+  notify_('Syncing every hour, searching YouTube every night around 3am' +
+    (mirrorId_() ? ', and saving a full Drive backup every Monday.' : '.'));
 }
 
 function removeTriggers(silent) {
   ScriptApp.getProjectTriggers()
-    .filter(t => ['syncFromSource', 'fillYouTubeLinks'].includes(t.getHandlerFunction()))
+    .filter(t => ['syncFromSource', 'fillYouTubeLinks', 'weeklyBackup'].includes(t.getHandlerFunction()))
     .forEach(t => ScriptApp.deleteTrigger(t));
   if (silent !== true) notify_('Automatic updates stopped.');
 }
