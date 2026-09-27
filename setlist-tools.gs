@@ -50,7 +50,8 @@ const CONFIG = {
   MASTER: 'Master Songs',
   MASTER_HEADERS: ['Artist', 'Title', 'YouTube', 'Residencies', 'Notes'],
   APPEARANCES: 'Appearances',
-  TRACK_HEADERS: ['Appearance', 'gid', 'Unique ID', 'Artist', 'Song Title', 'Status', 'YouTube', 'Date', 'Position', 'Plays'],
+  // Master link: the Master Songs link in effect at the last sync, so an edit to it can be spotted.
+  TRACK_HEADERS: ['Appearance', 'gid', 'Unique ID', 'Artist', 'Song Title', 'Status', 'YouTube', 'Date', 'Position', 'Plays', 'Master link'],
   APPEARANCE_HEADERS: ['Tab', 'gid', 'City', 'Year', 'Event', 'Order', 'Slug'],
 
   // Which gig each city tab is, by the number at the start of the tab name.
@@ -99,6 +100,7 @@ function onOpen() {
     .addSeparator()
     .addItem('Build / refresh master song list', 'buildMasterList')
     .addItem('Find YouTube links now', 'fillYouTubeLinks')
+    .addItem('Undo selected submissions', 'undoSubmissions')
     .addSeparator()
     .addItem('Set up mirror and backups', 'setUpMirror')
     .addItem('Mirror community sheet now', 'mirrorNow')
@@ -336,10 +338,14 @@ function weeklyBackup() {
 
 /* ---------- 1. Sync ---------- */
 
-// Mirrors every community tab into Tracks, matched by tab + Unique ID.
+// Mirrors every community tab into Tracks, matched by tab + Unique ID. The tab is
+// recognized by its gig number ("21" in "21-Miami"), or by its internal gid as a fallback,
+// so renaming a tab or rebuilding the Mirror doesn't lose any links.
 // A YouTube URL, once found, is kept for good: the track is never searched again,
 // even if fans later edit its artist or title. Tracks without a URL are searched
 // again only if their artist or title changes (e.g. an Unknown gets identified).
+// A visitor's submitted link beats every other link, including Master Songs, until
+// you change that song's link in Master Songs (the newer edit wins) or undo it.
 function syncFromSource() {
   withLock_(() => {
     // Refresh the Mirror first, then read from it. If the community sheet can't be
@@ -349,8 +355,15 @@ function syncFromSource() {
     const src = sourceBook_();
     const tracks = sheet_(CONFIG.TRACKS, CONFIG.TRACK_HEADERS);
 
-    const prev = {};
-    rows_(tracks).forEach(r => { prev[`${r[T.gid]}|${r[T['Unique ID']]}`] = r; });
+    const prev = {}, prevByTab = {};
+    rows_(tracks).forEach(r => {
+      prev[`${r[T.gid]}|${r[T['Unique ID']]}`] = r;
+      prevByTab[`${tabKey_(r[T.Appearance])}|${r[T['Unique ID']]}`] = r;
+    });
+    // Before the Master link column existed, treat every Master Songs link as unchanged.
+    const hadMasterCol = tracks.getRange(1, 1, 1, tracks.getLastColumn()).getValues()[0]
+      .includes('Master link');
+    const prevMasterLink = p => hadMasterCol ? String(p[T['Master link']] || '').trim() : null;
 
     const out = [];
     const tabs = [];
@@ -407,7 +420,7 @@ function syncFromSource() {
           seen[base] = (seen[base] || 0) + 1;
           id = `auto-${base}-${seen[base]}`;
         }
-        const p = prev[`${gid}|${id}`];
+        const p = prevByTab[`${tabKey_(s.getName())}|${id}`] || prev[`${gid}|${id}`];
         const same = p && String(p[T.Artist]) === artist && String(p[T['Song Title']]) === title;
         // Which link to use: one a visitor submitted on the site, then one fans added
         // in the community sheet, then the one the search found earlier.
@@ -425,6 +438,7 @@ function syncFromSource() {
         row[T.YouTube] = url;
         row.community = !submitted && !!community && url === community;
         row.submitted = !!submitted;
+        row.prev = p;
         row[T.Date] = date || lastDate;
         // A plays count, either from a column that holds one or by counting filled "Played at" cells.
         if (cPlays >= 0 && String(r[cPlays]).trim()) row[T.Plays] = String(r[cPlays]).trim();
@@ -441,16 +455,21 @@ function syncFromSource() {
 
     const swapped = fixSwapped_(out);
     const master = masterList_();
+    // A Master Songs link counts as edited when it differs from the one this row saw last sync.
+    const masterEdited = (p, url) => !!p && prevMasterLink(p) !== null && prevMasterLink(p) !== url;
     let mastered = 0;
     out.forEach(r => {
       const url = master.links[masterKey_(r[T.Artist], r[T['Song Title']])];
-      if (url && String(r[T.YouTube]).trim() !== url) {
+      if (!url) return;
+      r[T['Master link']] = url;
+      // A visitor's link stays, unless you've changed this song's Master Songs link since.
+      if (r.submitted && !masterEdited(r.prev, url)) return;
+      r.submitted = false;
+      if (String(r[T.YouTube]).trim() !== url) {
         r[T.YouTube] = url;
-        r[T.Status] = CONFIG.STATUS.MASTER;
         mastered++;
-      } else if (url) {
-        r[T.Status] = CONFIG.STATUS.MASTER;
       }
+      r[T.Status] = CONFIG.STATUS.MASTER;
     });
     // The master list also feeds the site's All songs page. Its rows are rebuilt every
     // sync, so links they got before (from a visitor, the nightly search, or a residency)
@@ -464,15 +483,17 @@ function syncFromSource() {
     master.rows.forEach((m, i) => {
       const p = prevMaster[masterKey_(m.artist, m.title)];
       const prevUrl = p ? String(p[T.YouTube]).trim() : '';
-      const submitted = !m.url && p && p[T.Status] === CONFIG.STATUS.SUBMITTED && prevUrl;
+      const submitted = p && p[T.Status] === CONFIG.STATUS.SUBMITTED && prevUrl &&
+        !(m.url && masterEdited(p, m.url));
       const row = new Array(CONFIG.TRACK_HEADERS.length).fill('');
       row[T.Appearance] = CONFIG.MASTER;
       row[T.gid] = 'master';
       row[T['Unique ID']] = `master-${i + 1}`;
       row[T.Artist] = m.artist;
       row[T['Song Title']] = m.title;
-      row[T.YouTube] = m.url || (submitted ? prevUrl : '');
-      row[T.Status] = m.url ? CONFIG.STATUS.MASTER : (submitted ? CONFIG.STATUS.SUBMITTED : '');
+      row[T.YouTube] = submitted ? prevUrl : m.url;
+      row[T.Status] = submitted ? CONFIG.STATUS.SUBMITTED : (m.url ? CONFIG.STATUS.MASTER : '');
+      row[T['Master link']] = m.url;
       row.submitted = !!submitted;
       row.prev = p;
       row[T.Position] = i + 1;
@@ -587,6 +608,11 @@ function extraTab_(s) {
   const key = Object.keys(CONFIG.EXTRA_TABS).find(k => k.trim().toLowerCase() === want);
   return key ? CONFIG.EXTRA_TABS[key] : null;
 }
+// Identifies a tab across renames and Mirror rebuilds: its gig number, or its name for other tabs.
+const tabKey_ = name => {
+  const m = String(name).match(CONFIG.CITY_TAB);
+  return m ? `#${Number(m[1])}` : String(name).trim().toLowerCase();
+};
 const tabNumber_ = s => extraTab_(s) ? extraTab_(s).order : Number(s.getName().match(CONFIG.CITY_TAB)[1]);
 // "15-Pasadena (TANP)" → "Pasadena"
 const tabCity_ = s => extraTab_(s) ? extraTab_(s).label
@@ -1073,9 +1099,51 @@ function applySubmission_(gid, id, url) {
   });
   tracks.getRange(2, T.Status + 1, data.length, 2).setValues(data.map(r => [r[T.Status], r[T.YouTube]]));
 
-  const log = sheet_(CONFIG.SUBMISSIONS, ['When', 'Gig', 'Unique ID', 'Artist', 'Song Title', 'Old link', 'New link', 'Tracks updated']);
+  const log = sheet_(CONFIG.SUBMISSIONS, ['When', 'Gig', 'Unique ID', 'Artist', 'Song Title', 'Old link', 'New link', 'Tracks updated', 'Undone']);
   log.appendRow([new Date(), row[T.Appearance], id, row[T.Artist], row[T['Song Title']], old, url, updated]);
   return { ok: true, yt: url.split('v=')[1], updated };
+}
+
+// Select one or more rows in the Submissions tab, then run this. Each track the submission
+// changed goes back to its old link (or to blank, to be searched again), newest first.
+// Tracks that have been changed again since are left alone.
+function undoSubmissions() {
+  const ui = SpreadsheetApp.getUi();
+  const log = SpreadsheetApp.getActive().getSheetByName(CONFIG.SUBMISSIONS);
+  const sel = log && SpreadsheetApp.getActiveSheet().getName() === CONFIG.SUBMISSIONS &&
+    SpreadsheetApp.getActiveRangeList();
+  if (!sel) { ui.alert('Open the Submissions tab and select the rows to undo first.'); return; }
+  const picked = new Set();
+  sel.getRanges().forEach(rg => {
+    for (let n = rg.getRow(); n < rg.getRow() + rg.getNumRows(); n++) if (n > 1) picked.add(n);
+  });
+  if (!picked.size) { ui.alert('Select the rows to undo first (not the header).'); return; }
+
+  const result = withLock_(() => {
+    const tracks = SpreadsheetApp.getActive().getSheetByName(CONFIG.TRACKS);
+    const data = rows_(tracks);
+    let undone = 0, reverted = 0;
+    [...picked].sort((a, b) => b - a).forEach(n => {
+      const [, , , artist, title, oldUrl, newUrl, , done] =
+        log.getRange(n, 1, 1, 9).getValues()[0].map(v => String(v).trim());
+      if (!newUrl || done) return;
+      const k = songKey_(artist, title);
+      data.forEach(r => {
+        if (r[T.Status] === CONFIG.STATUS.SUBMITTED && String(r[T.YouTube]).trim() === newUrl &&
+            songKey_(r[T.Artist], r[T['Song Title']]) === k) {
+          r[T.YouTube] = oldUrl;
+          r[T.Status] = oldUrl ? CONFIG.STATUS.FOUND : '';
+          reverted++;
+        }
+      });
+      log.getRange(n, 9).setValue(`Undone ${new Date().toLocaleString()}`);
+      undone++;
+    });
+    if (data.length) tracks.getRange(2, T.Status + 1, data.length, 2).setValues(data.map(r => [r[T.Status], r[T.YouTube]]));
+    return { undone: undone, reverted: reverted };
+  });
+  if (!result) return notify_('Busy with another run. Try again in a minute.');
+  notify_(`Undid ${result.undone} submissions (${result.reverted} tracks). The site updates at the next hourly build.`);
 }
 
 function youTubeId_(url) {

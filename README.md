@@ -134,16 +134,20 @@ Most things happen on their own:
   (by tab number), or to `GIGS_BY_DATE` if the tab doesn't exist yet.
 - **New songs get links overnight**, newest residency first, then the megalist.
 - **Visitors fix wrong links** with **Wrong link? → Replace this link** on the site.
-  Every change is logged in the **Submissions** tab of the links sheet. To undo one,
-  paste the old link back into the Tracks tab.
+  A visitor's link goes live at the next build, and every change is logged in the
+  **Submissions** tab of the links sheet. To undo some, select their rows in Submissions and
+  choose **Setlist tools → Undo selected submissions**. Each track goes back to its old link
+  (or to blank, to be searched again), and the row is marked Undone.
 
 ### The master song list (Master Songs tab)
 
 One row per song: Artist, Title, YouTube, Residencies, Notes. It is yours — the hourly sync
 never overwrites it — and it does two jobs:
 
-1. **Supplies links everywhere.** A master link beats the automatic search, links fans add in
-   the community sheet, and links visitors submit. Matched tracks show **Master** in Tracks.
+1. **Supplies links everywhere.** A master link beats the automatic search and links fans add
+   in the community sheet. Matched tracks show **Master** in Tracks. A link a visitor submits
+   later wins over it, so a broken master link can be fixed from the site. If you then change
+   that song's link in Master Songs, your newer edit wins again.
 2. **Fills the All songs page**, when `config.json` has `"allSongsTab": "Master Songs"`.
 
 Matching ignores case, punctuation, brackets, "feat. …", a bracketed year, and these tags:
@@ -183,6 +187,7 @@ Every few weeks, or after a new residency is identified:
 | Build / refresh master song list | Appends missing songs to Master Songs, merged by the site's rules |
 | Copy megalist into master list (as written) | Appends missing megalist entries verbatim, for hand-cleaning |
 | Find YouTube links now | Runs the search immediately, within the day's quota |
+| Undo selected submissions | Reverts the visitor links in the selected Submissions rows |
 | Set up automatic updates | Hourly sync + nightly search |
 | Stop automatic updates | Removes both schedules |
 
@@ -218,8 +223,10 @@ Every few weeks, or after a new residency is identified:
   track with a link starts when a video ends; it's off by default and remembered per browser.
 - Once a track has a YouTube link, it is never searched again.
 - A song played at several gigs shares one link.
-- Link priority: the **Master Songs** tab, then a visitor's submitted link, then a link fans
-  added in the community sheet, then the automatic search.
+- Link priority: whichever is newer of a visitor's submitted link and your **Master Songs**
+  link, then a link fans added in the community sheet, then the automatic search.
+- Links stay with their track when a tab is renamed or the Mirror is rebuilt: tracks are
+  matched by gig number (the `21` in `21-Miami`) and Unique ID.
 - Rows in the megalist with artist and title in the wrong columns are corrected during the
   sync, using the residency tabs as the reference.
 
