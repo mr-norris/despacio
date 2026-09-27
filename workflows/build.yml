@@ -6,6 +6,7 @@ on:
   workflow_dispatch:        # "Run workflow" button for an immediate rebuild
   push:
     branches: [main]
+    paths-ignore: ['data/**']   # the daily backup commits don't need a rebuild
 
 permissions:
   contents: read
