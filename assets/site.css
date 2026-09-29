@@ -134,6 +134,11 @@ h1 + .prose { margin-top: 1.5rem; }
 .sep { color: var(--muted); }
 .count { display: block; color: var(--muted); font-size: .85rem; font-variant-numeric: tabular-nums; }
 .count .gig { white-space: nowrap; }
+.played summary { cursor: pointer; width: fit-content; text-decoration: underline; text-underline-offset: 2px; }
+.played summary::marker { content: ''; }
+.played summary::after { content: ' ▸'; }
+.played[open] summary::after { content: ' ▾'; }
+.played .gigs { display: block; margin-top: .15rem; }
 .count a { color: inherit; text-underline-offset: 2px; }
 .count a:hover { color: var(--ink); }
 .unidentified .title { font-weight: 400; color: var(--muted); }

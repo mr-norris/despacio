@@ -118,7 +118,7 @@ ${list.map(a => {
 
 const dayId = d => `d-${d.replace(/\//g, '-')}`;
 
-function trackItem(t, i) {
+function trackItem(t, i, playedAt, root) {
   const artist = t['artist'];
   const title = t['song title'];
   const id = t['unique id'];
@@ -140,7 +140,7 @@ function trackItem(t, i) {
 
   return `<li class="track${unknown ? ' unidentified' : ''}" id="t-${esc(slugify(id) || String(i + 1))}" data-gid="${esc(t['gid'])}" data-id="${esc(id)}">
   <span class="pos">${String(i + 1).padStart(2, '0')}</span>
-  <span class="song">${song}</span>
+  <span class="song">${song}${playedAt ? `<span class="count">${playedAtLine(playedAt, root)}</span>` : ''}</span>
   <span class="sources">${play}${fix}</span>
   <div class="player" hidden></div>
 </li>`;
@@ -183,12 +183,14 @@ const playerBar = `<div class="controls" role="group" aria-label="Player">
 </div>
 `;
 
-function tracklist(a) {
+// Pages that aren't a gig (Despacio Classics) show where each song was played.
+function tracklist(a, root, residencies) {
   const days = [];
   a.tracks.forEach((t, i) => {
     const d = t['date'] || '';
     if (!days.length || days[days.length - 1].date !== d) days.push({ date: d, items: [] });
-    days[days.length - 1].items.push(trackItem(t, i));
+    const playedAt = a.gig || !residencies ? null : residencies.get(masterKey(t['artist'], t['song title']));
+    days[days.length - 1].items.push(trackItem(t, i, playedAt, root));
   });
   const multi = a.dates.length > 1;
   return days.map(day => `${multi && day.date ? `<h2 class="day" id="${dayId(day.date)}">${esc(day.date)}</h2>\n` : ''}<ol class="tracks">
@@ -196,7 +198,7 @@ ${day.items.join('\n')}
 </ol>`).join('\n');
 }
 
-function setPage(a, list, root = '../../', isHome = false) {
+function setPage(a, list, root = '../../', isHome = false, residencies) {
   const count = a.tracks.length;
   return page({
     list, current: a, root, isHome,
@@ -204,12 +206,12 @@ function setPage(a, list, root = '../../', isHome = false) {
     description: `${a.year ? `${config.siteTitle} setlist, ${a.city}` : `${config.siteTitle}: ${a.city}`}${a.event ? `, ${a.event}` : ''}. ${count} track${count === 1 ? '' : 's'}.`,
     main: `<h1>${esc(a.label)}</h1>
 ${a.event ? `<p class="event">${esc(a.event)}</p>` : ''}
-${count ? playerBar + tracklist(a) : '<p class="empty">No tracks on this setlist yet.</p>'}`,
+${count ? playerBar + tracklist(a, root, residencies) : '<p class="empty">No tracks on this setlist yet.</p>'}`,
   });
 }
 
 // The home page is the most recent gig's setlist.
-const homePage = list => setPage(list[0], list, '', true);
+const homePage = (list, residencies) => setPage(list[0], list, '', true, residencies);
 
 // Tags that fold an entry into the original song: it's the same record, just labelled
 // differently.
@@ -273,7 +275,7 @@ const songKey = t => `${normalize(t['artist'])}|${normalize(baseTitle(t['song ti
 const masterKey = (artist, title) =>
   `${normalize(artist)}|${normalize(stripTag(displayTitle(title), DEFINITIVE_TAG))}`;
 
-// Every residency each song was played at, newest first: song key → [{ label, href }].
+// Every residency each song was played at, newest first: song key → [{ label, path }].
 // Worked out from the setlists at every build, so a new gig is included automatically.
 // Residencies too small to have a page are listed without a link.
 function residencyIndex(apps, byGid, list) {
@@ -292,11 +294,22 @@ function residencyIndex(apps, byGid, list) {
       const k = masterKey(t['artist'], t['song title']);
       if (seen.has(k)) return; // first time it was played at this gig
       seen.add(k);
-      const href = page ? `../sets/${page.slug}/#t-${slugify(t['unique id'])}` : '';
-      (index.get(k) || index.set(k, []).get(k)).push({ label: g.label, href });
+      const path = page ? `sets/${page.slug}/#t-${slugify(t['unique id'])}` : '';
+      (index.get(k) || index.set(k, []).get(k)).push({ label: g.label, path });
     });
   });
   return index;
+}
+
+// "Played at Miami 2025 · Ghent 2024". Three or more collapse to "5 residencies", which
+// expands to the names when clicked. Each name links to the song in that set.
+function playedAtLine(playedAt, root) {
+  if (!playedAt || !playedAt.length) return '';
+  const names = playedAt.map(r => r.path
+    ? `<a class="gig" href="${esc(root + r.path)}">${esc(r.label)}</a>`
+    : `<span class="gig">${esc(r.label)}</span>`).join(' · ');
+  if (playedAt.length < 3) return `Played at ${names}`;
+  return `<details class="played"><summary>Played at ${playedAt.length} residencies</summary><span class="gigs">${names}</span></details>`;
 }
 
 // Which spelling to show: a definitive version wins, then the bracketed spelling,
@@ -398,9 +411,7 @@ function renderSongs(list, ranked) {
       ? `<button type="button" class="play" data-yt="${song.yt}" aria-expanded="false" aria-label="Play ${esc([t['artist'], song.title].filter(Boolean).join(' – '))} on YouTube">Play</button>`
       : '';
     const fix = canSubmit ? `<button type="button" class="fix">${song.yt ? 'Wrong link?' : 'Add link'}</button>` : '';
-    const playedAt = song.playedAt && song.playedAt.length
-      ? 'Played at ' + song.playedAt.map(r => r.href ? `<a class="gig" href="${esc(r.href)}">${esc(r.label)}</a>` : `<span class="gig">${esc(r.label)}</span>`).join(' · ')
-      : '';
+    const playedAt = playedAtLine(song.playedAt, '../');
     const meta = [
       playedAt || (song.plays ? `${song.plays} residenc${song.plays === 1 ? 'y' : 'ies'}` : ''),
       song.versions > 1 ? `${song.versions} versions` : '',
@@ -544,6 +555,7 @@ async function build() {
         year: r['year'],
         label: [r['city'] || cityName(r['tab']), r['year']].filter(Boolean).join(' '),
         event: r['event'],
+        gig: /^\s*\d+\s*[-–—]/.test(r['tab'] || ''),
         order: parseFloat(r['order']) || 0,
         // Order comes from the sheet script's Position column (Unique ID order, or row
         // order for older tabs without IDs); Unique ID is the fallback.
@@ -561,17 +573,18 @@ async function build() {
   await cp('assets', join(OUT, 'assets'), { recursive: true });
   await writeFile(join(OUT, '.nojekyll'), '');
   if (!list.length) throw new Error(`No gigs with at least ${config.minTracks || 1} tracks found in the Tracks tab.`);
-  await writeFile(join(OUT, 'index.html'), homePage(list));
+  const residencies = residencyIndex(apps, byGid, list);
+  await writeFile(join(OUT, 'index.html'), homePage(list, residencies));
 
   await mkdir(join(OUT, 'about'), { recursive: true });
   await writeFile(join(OUT, 'about', 'index.html'), aboutPage(list));
   await mkdir(join(OUT, 'songs'), { recursive: true });
-  await writeFile(join(OUT, 'songs', 'index.html'), allSongsPage(list, megalist, residencyIndex(apps, byGid, list)));
+  await writeFile(join(OUT, 'songs', 'index.html'), allSongsPage(list, megalist, residencies));
 
   for (let i = 0; i < list.length; i++) {
     const dir = join(OUT, 'sets', list[i].slug);
     await mkdir(dir, { recursive: true });
-    await writeFile(join(dir, 'index.html'), setPage(list[i], list));
+    await writeFile(join(dir, 'index.html'), setPage(list[i], list, '../../', false, residencies));
   }
   console.log(`Built ${list.length} appearance pages and ${tracks.length} tracks into ${OUT}/`);
   console.log(`All songs page: ${megalist.length} rows from the "${allSongsTab}" tab.`);
