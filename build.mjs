@@ -449,7 +449,16 @@ ${items}
 </ol>`,
   });
 }
-// One row per entry, in the order the source tab has them, ranked by plays if counted.
+// Songs played at the same number of residencies are listed A–Z by artist, then title,
+// the same way the A–Z button sorts: "The" is ignored and songs with no artist go last.
+const noThe = v => String(v || '').trim().replace(/^the\s+/i, '');
+const azCompare = (x, y) => x.localeCompare(y, undefined, { sensitivity: 'base', numeric: true });
+const azOrder = (a, b) => {
+  const aa = noThe(a.track['artist']), ba = noThe(b.track['artist']);
+  return (!aa - !ba) || azCompare(aa, ba) || azCompare(noThe(a.title), noThe(b.title));
+};
+
+// One row per entry from the source tab, ranked by plays, ties A–Z.
 // Songs found in the setlists are ranked by how many residencies played them; any that
 // can't be matched (e.g. spelled differently) fall back to the tab's own count.
 function allSongsPlain(list, source, residencies = new Map()) {
@@ -463,8 +472,7 @@ function allSongsPlain(list, source, residencies = new Map()) {
         yt: ytId(t['youtube']), playedAt,
       };
     })
-    .sort((a, b) => (b.plays - a.plays) ||
-      (parseFloat(a.track['position']) - parseFloat(b.track['position'])));
+    .sort((a, b) => (b.plays - a.plays) || azOrder(a, b));
   return renderSongs(list, ranked);
 }
 
