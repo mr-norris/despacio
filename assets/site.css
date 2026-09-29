@@ -133,6 +133,9 @@ h1 + .prose { margin-top: 1.5rem; }
 .title { font-weight: 400; }
 .sep { color: var(--muted); }
 .count { display: block; color: var(--muted); font-size: .85rem; font-variant-numeric: tabular-nums; }
+.count .gig { white-space: nowrap; }
+.count a { color: inherit; text-underline-offset: 2px; }
+.count a:hover { color: var(--ink); }
 .unidentified .title { font-weight: 400; color: var(--muted); }
 
 .sources { display: flex; flex-wrap: wrap; gap: .9rem; justify-content: flex-end; }

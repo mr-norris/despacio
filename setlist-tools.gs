@@ -79,7 +79,7 @@ const CONFIG = {
   // tab's Date column (MM/DD/YYYY). Once the tab exists you can move the entry into
   // GIGS above by its number, but it works from here too.
   GIGS_BY_DATE: [
-    { dates: ['09/26/2026', '09/27/2026'], city: 'San Francisco', year: 2026, event: 'Portola Festival, September 26 & 27, 2026' },
+    { dates: ['09/25/2026', '09/26/2026', '09/27/2026'], city: 'San Francisco', year: 2026, event: 'Portola Festival, September 25, 26 & 27, 2026' },
   ],
   YT_SEARCHES_PER_RUN: 90,   // 100 quota units each; free quota is 10,000/day
   STATUS: { UNKNOWN: 'Unknown', NO_MATCH: 'No match', FOUND: 'Found', SUBMITTED: 'Submitted', MASTER: 'Master' },

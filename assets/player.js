@@ -327,7 +327,8 @@
   if (filterBox) {
     const rows = [...document.querySelectorAll('.track')];
     const countEl = document.querySelector('.filter-count');
-    const text = new Map(rows.map(r => [r, r.querySelector('.song').textContent.toLowerCase()]));
+    // Song and artist only, not the "Played at" line, so "man" doesn't match every Manchester song.
+    const text = new Map(rows.map(r => [r, r.querySelector('.song .line').textContent.toLowerCase()]));
     const apply = () => {
       const q = filterBox.value.trim().toLowerCase();
       let shown = 0;

@@ -268,6 +268,37 @@ const normalize = v => String(v || '').toLowerCase()
 
 const songKey = t => `${normalize(t['artist'])}|${normalize(baseTitle(t['song title']))}`;
 
+// The key the sheet script uses to match Master Songs rows to tracks: edits, remasters and
+// definitive versions fold into the song, but remixes, live takes etc. stay separate.
+const masterKey = (artist, title) =>
+  `${normalize(artist)}|${normalize(stripTag(displayTitle(title), DEFINITIVE_TAG))}`;
+
+// Every residency each song was played at, newest first: song key → [{ label, href }].
+// Worked out from the setlists at every build, so a new gig is included automatically.
+// Residencies too small to have a page are listed without a link.
+function residencyIndex(apps, byGid, list) {
+  const pages = new Map(list.map(a => [a.gid, a]));
+  const gigs = apps
+    .filter(r => r['gid'] && /^\s*\d+\s*[-–—]/.test(r['tab'] || ''))
+    .map(r => ({ gid: r['gid'], order: parseFloat(r['order']) || 0,
+                 label: [r['city'] || cityName(r['tab']), r['year']].filter(Boolean).join(' ') }))
+    .sort((a, b) => b.order - a.order);
+  const index = new Map();
+  gigs.forEach(g => {
+    const page = pages.get(g.gid);
+    const seen = new Set();
+    (byGid[g.gid] || []).forEach(t => {
+      if (!t['song title'] || isUnknown(t['song title'])) return;
+      const k = masterKey(t['artist'], t['song title']);
+      if (seen.has(k)) return; // first time it was played at this gig
+      seen.add(k);
+      const href = page ? `../sets/${page.slug}/#t-${slugify(t['unique id'])}` : '';
+      (index.get(k) || index.set(k, []).get(k)).push({ label: g.label, href });
+    });
+  });
+  return index;
+}
+
 // Which spelling to show: a definitive version wins, then the bracketed spelling,
 // then the shortest.
 const preferredTitle = titles =>
@@ -279,10 +310,10 @@ const preferredTitle = titles =>
 // The All songs page comes straight from the megalist tab of the spreadsheet. Versions of
 // the same song are merged into one row, ranked by plays when the tab counts them.
 // Songs with no link are listed too; Shuffle only picks from the ones that can be played.
-function allSongsPage(list, megalist) {
+function allSongsPage(list, megalist, residencies) {
   // With a hand-curated song list there are no duplicates to collapse, so
   // "mergeVersions": false in config.json shows the list exactly as written.
-  if (config.mergeVersions === false) return allSongsPlain(list, megalist);
+  if (config.mergeVersions === false) return allSongsPlain(list, megalist, residencies);
 
   // Group by song, then by which recording each entry is.
   const groups = new Map();
@@ -367,8 +398,11 @@ function renderSongs(list, ranked) {
       ? `<button type="button" class="play" data-yt="${song.yt}" aria-expanded="false" aria-label="Play ${esc([t['artist'], song.title].filter(Boolean).join(' – '))} on YouTube">Play</button>`
       : '';
     const fix = canSubmit ? `<button type="button" class="fix">${song.yt ? 'Wrong link?' : 'Add link'}</button>` : '';
+    const playedAt = song.playedAt && song.playedAt.length
+      ? 'Played at ' + song.playedAt.map(r => r.href ? `<a class="gig" href="${esc(r.href)}">${esc(r.label)}</a>` : `<span class="gig">${esc(r.label)}</span>`).join(' · ')
+      : '';
     const meta = [
-      song.plays ? `${song.plays} residenc${song.plays === 1 ? 'y' : 'ies'}` : '',
+      playedAt || (song.plays ? `${song.plays} residenc${song.plays === 1 ? 'y' : 'ies'}` : ''),
       song.versions > 1 ? `${song.versions} versions` : '',
     ].filter(Boolean).join(', ');
     return `<li class="track" id="s-${esc(slugify(song.title) || String(i + 1))}" data-gid="${esc(t['gid'])}" data-id="${esc(t['unique id'])}" data-rank="${i}">
@@ -405,14 +439,19 @@ ${items}
   });
 }
 // One row per entry, in the order the source tab has them, ranked by plays if counted.
-function allSongsPlain(list, source) {
+// Songs found in the setlists are ranked by how many residencies played them; any that
+// can't be matched (e.g. spelled differently) fall back to the tab's own count.
+function allSongsPlain(list, source, residencies = new Map()) {
   const ranked = source
     .filter(t => t['song title'] && !(isUnknown(t['artist']) && isUnknown(t['song title'])))
-    .map(t => ({
-      track: t, title: String(t['song title']).trim(),
-      plays: parseFloat(t['plays'] || 0) || 0, versions: 1,
-      yt: ytId(t['youtube']),
-    }))
+    .map(t => {
+      const playedAt = residencies.get(masterKey(t['artist'], t['song title'])) || [];
+      return {
+        track: t, title: String(t['song title']).trim(),
+        plays: playedAt.length || parseFloat(t['plays'] || 0) || 0, versions: 1,
+        yt: ytId(t['youtube']), playedAt,
+      };
+    })
     .sort((a, b) => (b.plays - a.plays) ||
       (parseFloat(a.track['position']) - parseFloat(b.track['position'])));
   return renderSongs(list, ranked);
@@ -527,7 +566,7 @@ async function build() {
   await mkdir(join(OUT, 'about'), { recursive: true });
   await writeFile(join(OUT, 'about', 'index.html'), aboutPage(list));
   await mkdir(join(OUT, 'songs'), { recursive: true });
-  await writeFile(join(OUT, 'songs', 'index.html'), allSongsPage(list, megalist));
+  await writeFile(join(OUT, 'songs', 'index.html'), allSongsPage(list, megalist, residencyIndex(apps, byGid, list)));
 
   for (let i = 0; i < list.length; i++) {
     const dir = join(OUT, 'sets', list[i].slug);
