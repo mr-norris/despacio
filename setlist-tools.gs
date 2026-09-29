@@ -100,7 +100,7 @@ function onOpen() {
     .addItem('Report Master Songs duplicates', 'reportMasterDuplicates')
     .addItem('Apply Master Songs Duplicates tab', 'applyMasterDuplicates')
     .addSeparator()
-    .addItem('Build / refresh master song list', 'buildMasterList')
+    .addItem('Add new songs to Master Songs', 'buildMasterList')
     .addItem('Find YouTube links now', 'fillYouTubeLinks')
     .addItem('Undo selected submissions', 'undoSubmissions')
     .addSeparator()
@@ -739,7 +739,11 @@ const normSong_ = v => String(v || '').toLowerCase()
 // Creates or refreshes the Master Songs tab: one row per song, merged the way the site
 // merges them, with the best link found so far. Your edits are kept: an existing row's
 // Artist, Title, YouTube and Notes are never overwritten, and rows you add by hand stay.
-// New songs are appended at the bottom so you can work through them.
+// New songs are appended at the bottom so you can work through them, each tagged in Notes
+// with the date and where it came from, e.g. "Added 10/02/2026 from 22-San Francisco".
+// A song is only ever offered once: every song already offered or in the list is remembered
+// in the hidden "Master Songs Seen" tab, so rows you delete or rename don't come back.
+// The first time, everything in the sheet counts as seen except the newest gig's songs.
 function buildMasterList() {
   const tracks = SpreadsheetApp.getActive().getSheetByName(CONFIG.TRACKS);
   if (!tracks) { SpreadsheetApp.getUi().alert('Run a sync first.'); return; }
@@ -757,23 +761,62 @@ function buildMasterList() {
     const title = String(r[T['Song Title']]).trim();
     if (!title || isUnknown_(title)) return;
     const k = masterKey_(artist, title);
-    if (!songs[k]) songs[k] = { artist: artist, title: baseTitle_(title), gigs: {}, url: '' };
+    if (!songs[k]) songs[k] = { artist: artist, title: baseTitle_(title), gigs: {}, from: {}, url: '' };
     const song = songs[k];
-    if (CONFIG.CITY_TAB.test(String(r[T.Appearance]))) song.gigs[String(r[T.gid])] = true;
+    const tab = String(r[T.Appearance]).trim();
+    if (CONFIG.CITY_TAB.test(tab)) song.gigs[String(r[T.gid])] = tab;
+    else if (String(r[T.gid]) !== 'master') song.from[tab] = true;
     if (!song.url) song.url = String(r[T.YouTube]).trim();
   });
 
-  const added = Object.keys(songs).filter(k => !have[k]).map(k => songs[k])
+  const seen = seenSongs_(songs, have);
+  const today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'MM/dd/yyyy');
+  const newKeys = Object.keys(songs).filter(k => !have[k] && !seen.has(k));
+  const added = newKeys.map(k => songs[k])
     .sort((a, b) => (Object.keys(b.gigs).length - Object.keys(a.gigs).length) ||
                      a.artist.localeCompare(b.artist))
-    .map(s => [s.artist, s.title, s.url, Object.keys(s.gigs).length, '']);
+    .map(s => [s.artist, s.title, s.url, Object.keys(s.gigs).length, addedNote_(s, today)]);
 
   if (added.length) {
-    sh.getRange(existing.length + 2, 1, added.length, CONFIG.MASTER_HEADERS.length)
+    sh.getRange(sh.getLastRow() + 1, 1, added.length, CONFIG.MASTER_HEADERS.length)
       .setNumberFormat('@').setValues(added);
   }
+  newKeys.concat(Object.keys(have)).forEach(k => seen.add(k));
+  saveSeenSongs_(seen);
   SpreadsheetApp.getActive().setActiveSheet(sh);
   notify_(`Master song list: ${existing.length} rows kept, ${added.length} new songs added.`);
+}
+
+const SEEN_TAB = 'Master Songs Seen';
+
+// Songs already offered to Master Songs. The first time there's no record, so everything
+// counts as seen except songs played at the newest gig that aren't in the list yet.
+function seenSongs_(songs, have) {
+  const sh = SpreadsheetApp.getActive().getSheetByName(SEEN_TAB);
+  if (sh) return new Set(rows_(sh).map(r => String(r[0])).filter(Boolean));
+  const gigNo = tab => Number(tab.match(CONFIG.CITY_TAB)[1]);
+  const newest = Math.max(0, ...Object.values(songs).map(s => Math.max(0, ...Object.values(s.gigs).map(gigNo))));
+  return new Set(Object.keys(songs).filter(k => have[k] ||
+    !Object.values(songs[k].gigs).some(tab => gigNo(tab) === newest)));
+}
+
+function saveSeenSongs_(seen) {
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName(SEEN_TAB) || ss.insertSheet(SEEN_TAB);
+  sh.clear();
+  const keys = [...seen].sort();
+  sh.getRange(1, 1).setValue('Songs already offered to Master Songs (used by Add new songs; safe to ignore)');
+  if (keys.length) sh.getRange(2, 1, keys.length, 1).setNumberFormat('@').setValues(keys.map(k => [k]));
+  if (!sh.isSheetHidden()) sh.hideSheet();
+}
+
+// "Added 10/02/2026 from 22-San Francisco, 21-Miami": the gigs it was played at, newest
+// first, or the other tab it came from (e.g. megalist) if it isn't in any setlist.
+function addedNote_(song, today) {
+  const gigs = Object.values(song.gigs)
+    .sort((a, b) => Number(b.match(CONFIG.CITY_TAB)[1]) - Number(a.match(CONFIG.CITY_TAB)[1]));
+  const from = gigs.length ? gigs : Object.keys(song.from);
+  return `Added ${today}` + (from.length ? ` from ${from.join(', ')}` : '');
 }
 
 const masterKey_ = (artist, title) => `${normSong_(artist)}|${normSong_(baseTitle_(title))}`;
