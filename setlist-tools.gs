@@ -805,7 +805,7 @@ function reportMasterDuplicates() {
 
   const EDIT_2MANY = /2\s*many\s*dj'?s\s+(?:re-?)?edit/i, EDIT_DESPACIO = /despacio\s+(?:re-?)?edit/i;
   const out = [];
-  let songs = 0, pairs = 0;
+  let songs = 0, pairs = 0, respelled = 0;
   dupes.forEach(g => {
     songs++;
     const urls = [...new Set(g.map(r => r.url).filter(Boolean))];
@@ -816,8 +816,12 @@ function reportMasterDuplicates() {
       : g.every(r => r.url) ? 'Same link' : 'Link on some rows: keep one of those';
     const both = g.some(r => EDIT_2MANY.test(r.title)) && g.some(r => EDIT_DESPACIO.test(r.title));
     if (both) pairs++;
+    const spelled = new Set(g.map(r => normSong_(r.artist))).size > 1;
+    if (spelled) respelled++;
+    const note = [both ? '2manydjs Edit + Despacio Edit' : '',
+      spelled ? 'Artist written differently: check it is the same song' : ''].filter(Boolean).join('; ');
     g.forEach((r, i) => out.push([songs, r.row, r.artist, r.title, r.url,
-      i === 0 ? links : '', i === 0 && both ? '2manydjs Edit + Despacio Edit' : '']));
+      i === 0 ? links : '', i === 0 ? note : '']));
   });
 
   const H = ['Song', 'Row', 'Artist', 'Title', 'YouTube', 'Links', 'Note'];
@@ -828,21 +832,71 @@ function reportMasterDuplicates() {
   if (out.length) sh.getRange(2, 1, out.length, H.length).setNumberFormat('@').setValues(out);
   SpreadsheetApp.getActive().setActiveSheet(sh);
   SpreadsheetApp.getUi().alert(`${songs} songs have more than one row in Master Songs ` +
-    `(${pairs} with both a 2manydjs Edit and a Despacio Edit row).\n\n` +
+    `(${pairs} with both a 2manydjs Edit and a Despacio Edit row, ${respelled} with the artist written differently).\n\n` +
     'See the Master Songs Duplicates tab. Keep the row with the link you want before deleting the others.');
 }
 
 // Songs with more than one Master Songs row, in sheet order: [[{ row, artist, title, url }, ...], ...].
+// Rows are the same song when their titles match the way the site matches them and their
+// artists look alike: the same name, one name inside the other ("Bohannon" and "Hamilton
+// Bohannon", "Man Parrish" and "Man Parrish, Forbidden Overture"), or a small misspelling
+// ("Gainsburg" and "Gainsbourg"). Covers by other artists stay separate.
 function masterDuplicateGroups_(master) {
-  const groups = {}, order = [];
+  const items = [];
   rows_(master).forEach((r, i) => {
     const artist = String(r[0]).trim(), title = String(r[1]).trim();
     if (!artist && !title) return;
-    const k = masterKey_(artist, title);
+    items.push({ row: i + 2, artist: artist, title: title, url: String(r[2]).trim(),
+                 t: normSong_(baseTitle_(title)), names: artistNames_(artist) });
+  });
+  // Join rows with the same title and alike artists; a row can link a group together.
+  const parent = items.map((_, i) => i);
+  const find = i => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+  const byTitle = {};
+  items.forEach((it, i) => {
+    if (!it.t || isUnknown_(it.title)) return;
+    (byTitle[it.t] = byTitle[it.t] || []).forEach(j => {
+      if (artistsAlike_(it.names, items[j].names)) parent[find(i)] = find(j);
+    });
+    byTitle[it.t].push(i);
+  });
+  const groups = {}, order = [];
+  items.forEach((it, i) => {
+    const k = find(i);
     if (!groups[k]) { groups[k] = []; order.push(k); }
-    groups[k].push({ row: i + 2, artist: artist, title: title, url: String(r[2]).trim() });
+    groups[k].push(it);
   });
   return order.map(k => groups[k]).filter(g => g.length > 1);
+}
+
+// "Hall & Oates" → ["hall", "oates"]; "Blue Jazz TV ft. Billy G Robinson" → ["bluejazztv", "billygrobinson"].
+// The whole credit is included too, so "KelAir Band" can match "Kel Air & Band Band".
+function artistNames_(artist) {
+  const parts = String(artist || '')
+    .split(/\s*(?:,|&|\band\b|\bft\.?(?=\s)|\bfeat\.?(?=\s)|\bfeaturing\b|\bwith\b)\s*/i)
+    .map(normArtist_).filter(Boolean);
+  const whole = normArtist_(artist);
+  return whole && parts.indexOf(whole) < 0 ? parts.concat(whole) : parts;
+}
+const normArtist_ = v => String(v || '').toLowerCase().replace(/^\s*the\s+/, '').replace(/[^a-z0-9]+/g, '');
+
+function artistsAlike_(a, b) {
+  return a.some(x => b.some(y => x === y ||
+    (Math.min(x.length, y.length) >= 3 && (x.indexOf(y) >= 0 || y.indexOf(x) >= 0)) ||
+    (Math.min(x.length, y.length) >= 5 && editDistance_(x, y) <= 2)));
+}
+
+function editDistance_(a, b) {
+  if (Math.abs(a.length - b.length) > 2) return 3;
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    prev = cur;
+  }
+  return prev[b.length];
 }
 
 // Makes Master Songs match your cleanup in the Master Songs Duplicates tab: rows you deleted
