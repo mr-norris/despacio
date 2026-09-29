@@ -97,6 +97,7 @@ function onOpen() {
     .addItem('Report megalist duplicates', 'reportMegalistDuplicates')
     .addItem('Report shared links', 'reportSharedLinks')
     .addItem('Report All songs without links', 'reportMissingMasterLinks')
+    .addItem('Report Master Songs duplicates', 'reportMasterDuplicates')
     .addSeparator()
     .addItem('Build / refresh master song list', 'buildMasterList')
     .addItem('Find YouTube links now', 'fillYouTubeLinks')
@@ -788,6 +789,53 @@ function masterList_() {
   const links = {};
   rows.forEach(r => { if (r.url) links[masterKey_(r.artist, r.title)] = r.url; });
   return { links: links, rows: rows };
+}
+
+/* ---------- Master Songs duplicates ---------- */
+
+// Writes a "Master Songs Duplicates" tab: every song with more than one row in Master
+// Songs, matched the way the site matches them (edits, remasters, 12"/extended versions,
+// a bracketed year and a leading "The" fold into the song). Row is the Master Songs row
+// number. Read-only: nothing is merged. Run again after cleaning up to see what's left.
+function reportMasterDuplicates() {
+  const master = SpreadsheetApp.getActive().getSheetByName(CONFIG.MASTER);
+  if (!master) { SpreadsheetApp.getUi().alert('There is no Master Songs tab yet.'); return; }
+  const groups = {}, order = [];
+  rows_(master).forEach((r, i) => {
+    const artist = String(r[0]).trim(), title = String(r[1]).trim();
+    if (!artist && !title) return;
+    const k = masterKey_(artist, title);
+    if (!groups[k]) { groups[k] = []; order.push(k); }
+    groups[k].push({ row: i + 2, artist: artist, title: title, url: String(r[2]).trim() });
+  });
+
+  const EDIT_2MANY = /2\s*many\s*dj'?s\s+(?:re-?)?edit/i, EDIT_DESPACIO = /despacio\s+(?:re-?)?edit/i;
+  const out = [];
+  let songs = 0, pairs = 0;
+  order.map(k => groups[k]).filter(g => g.length > 1).forEach(g => {
+    songs++;
+    const urls = [...new Set(g.map(r => r.url).filter(Boolean))];
+    // Songs with no link here still have one on the site if the search found it; that link
+    // follows the song, so any of its rows can go.
+    const links = !urls.length ? 'No link here (the site keeps the search link)'
+      : urls.length > 1 ? 'Different links: check which is right'
+      : g.every(r => r.url) ? 'Same link' : 'Link on some rows: keep one of those';
+    const both = g.some(r => EDIT_2MANY.test(r.title)) && g.some(r => EDIT_DESPACIO.test(r.title));
+    if (both) pairs++;
+    g.forEach((r, i) => out.push([songs, r.row, r.artist, r.title, r.url,
+      i === 0 ? links : '', i === 0 && both ? '2manydjs Edit + Despacio Edit' : '']));
+  });
+
+  const H = ['Song', 'Row', 'Artist', 'Title', 'YouTube', 'Links', 'Note'];
+  const sh = sheet_('Master Songs Duplicates', H);
+  sh.clear();
+  sh.getRange(1, 1, 1, H.length).setValues([H]).setFontWeight('bold');
+  sh.setFrozenRows(1);
+  if (out.length) sh.getRange(2, 1, out.length, H.length).setNumberFormat('@').setValues(out);
+  SpreadsheetApp.getActive().setActiveSheet(sh);
+  SpreadsheetApp.getUi().alert(`${songs} songs have more than one row in Master Songs ` +
+    `(${pairs} with both a 2manydjs Edit and a Despacio Edit row).\n\n` +
+    'See the Master Songs Duplicates tab. Keep the row with the link you want before deleting the others.');
 }
 
 /* ---------- All songs without links ---------- */
