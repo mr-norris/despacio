@@ -98,6 +98,7 @@ function onOpen() {
     .addItem('Report shared links', 'reportSharedLinks')
     .addItem('Report All songs without links', 'reportMissingMasterLinks')
     .addItem('Report Master Songs duplicates', 'reportMasterDuplicates')
+    .addItem('Apply Master Songs Duplicates tab', 'applyMasterDuplicates')
     .addSeparator()
     .addItem('Build / refresh master song list', 'buildMasterList')
     .addItem('Find YouTube links now', 'fillYouTubeLinks')
@@ -800,19 +801,12 @@ function masterList_() {
 function reportMasterDuplicates() {
   const master = SpreadsheetApp.getActive().getSheetByName(CONFIG.MASTER);
   if (!master) { SpreadsheetApp.getUi().alert('There is no Master Songs tab yet.'); return; }
-  const groups = {}, order = [];
-  rows_(master).forEach((r, i) => {
-    const artist = String(r[0]).trim(), title = String(r[1]).trim();
-    if (!artist && !title) return;
-    const k = masterKey_(artist, title);
-    if (!groups[k]) { groups[k] = []; order.push(k); }
-    groups[k].push({ row: i + 2, artist: artist, title: title, url: String(r[2]).trim() });
-  });
+  const dupes = masterDuplicateGroups_(master);
 
   const EDIT_2MANY = /2\s*many\s*dj'?s\s+(?:re-?)?edit/i, EDIT_DESPACIO = /despacio\s+(?:re-?)?edit/i;
   const out = [];
   let songs = 0, pairs = 0;
-  order.map(k => groups[k]).filter(g => g.length > 1).forEach(g => {
+  dupes.forEach(g => {
     songs++;
     const urls = [...new Set(g.map(r => r.url).filter(Boolean))];
     // Songs with no link here still have one on the site if the search found it; that link
@@ -836,6 +830,82 @@ function reportMasterDuplicates() {
   SpreadsheetApp.getUi().alert(`${songs} songs have more than one row in Master Songs ` +
     `(${pairs} with both a 2manydjs Edit and a Despacio Edit row).\n\n` +
     'See the Master Songs Duplicates tab. Keep the row with the link you want before deleting the others.');
+}
+
+// Songs with more than one Master Songs row, in sheet order: [[{ row, artist, title, url }, ...], ...].
+function masterDuplicateGroups_(master) {
+  const groups = {}, order = [];
+  rows_(master).forEach((r, i) => {
+    const artist = String(r[0]).trim(), title = String(r[1]).trim();
+    if (!artist && !title) return;
+    const k = masterKey_(artist, title);
+    if (!groups[k]) { groups[k] = []; order.push(k); }
+    groups[k].push({ row: i + 2, artist: artist, title: title, url: String(r[2]).trim() });
+  });
+  return order.map(k => groups[k]).filter(g => g.length > 1);
+}
+
+// Makes Master Songs match your cleanup in the Master Songs Duplicates tab: rows you deleted
+// from the tab are deleted from Master Songs, and Artist / Title / YouTube edits to the rows
+// you kept are copied over (Residencies and Notes are left alone). Checks first that Master
+// Songs hasn't changed since the report was made, and asks before changing anything.
+// Undo with File → Version history if needed.
+function applyMasterDuplicates() {
+  const ui = SpreadsheetApp.getUi();
+  const ss = SpreadsheetApp.getActive();
+  const master = ss.getSheetByName(CONFIG.MASTER);
+  const report = ss.getSheetByName('Master Songs Duplicates');
+  if (!master || !report) { ui.alert('Run Setlist tools → Report Master Songs duplicates first.'); return; }
+
+  const dupes = masterDuplicateGroups_(master);
+  const kept = {};
+  rows_(report).forEach(r => {
+    const song = Number(r[0]), row = Number(r[1]);
+    if (!song || !row) return;
+    (kept[song] = kept[song] || []).push({ row: row, artist: String(r[2]).trim(),
+      title: String(r[3]).trim(), url: String(r[4]).trim() });
+  });
+
+  // Every kept row must still be in the same song group, or the report is out of date.
+  const stale = Object.keys(kept).some(song => {
+    const g = dupes[Number(song) - 1];
+    return !g || kept[song].some(k => !g.some(r => r.row === k.row));
+  });
+  if (stale) {
+    ui.alert('Master Songs has changed since the report was made, so row numbers may not line up. ' +
+      'Nothing was changed. Run the report again, redo the cleanup in the new tab, then apply it.');
+    return;
+  }
+
+  const del = [], edits = [], dropped = [];
+  dupes.forEach((g, i) => {
+    const keep = kept[i + 1] || [];
+    if (!keep.length) dropped.push(`${g[0].artist} – ${g[0].title}`);
+    g.forEach(r => {
+      const k = keep.find(x => x.row === r.row);
+      if (!k) { del.push(r.row); return; }
+      if (k.artist !== r.artist || k.title !== r.title || k.url !== r.url) edits.push(k);
+    });
+  });
+  if (!del.length && !edits.length) { ui.alert('Nothing to apply: Master Songs already matches the tab.'); return; }
+
+  const ok = ui.alert('Apply the cleanup to Master Songs?',
+    `This deletes ${del.length} rows and updates ${edits.length} rows in Master Songs.` +
+    (dropped.length ? `\n\nNo row was kept for: ${dropped.join('; ')}. All of its rows will be deleted.` : '') +
+    '\n\nYou can undo it with File → Version history.', ui.ButtonSet.OK_CANCEL);
+  if (ok !== ui.Button.OK) return;
+
+  const done = withLock_(() => {
+    edits.forEach(k => master.getRange(k.row, 1, 1, 3).setNumberFormat('@').setValues([[k.artist, k.title, k.url]]));
+    del.sort((a, b) => b - a).forEach(row => master.deleteRow(row)); // bottom up, so row numbers hold
+    return true;
+  });
+  if (!done) { ui.alert('Busy with another run. Try again in a minute.'); return; }
+  report.clear();
+  report.getRange(1, 1).setValue('Applied. Run Setlist tools → Report Master Songs duplicates to check what is left.');
+  ss.setActiveSheet(master);
+  ui.alert(`Done: ${del.length} rows deleted and ${edits.length} updated. The site picks this up within about 2 hours, ` +
+    'or run Sync from community sheet now.');
 }
 
 /* ---------- All songs without links ---------- */
