@@ -185,6 +185,7 @@ Every few weeks, or after a new residency is identified:
 | Report megalist duplicates | Writes **Megalist Report**: version-tag counts and every group that would merge |
 | Report shared links | Writes **Shared Links Report**: songs sharing one video, with a verdict |
 | Add new songs to Master Songs | Appends songs it has never offered before to the bottom of Master Songs, tagged in Notes with the date and gig. Rows you delete or rename don't come back |
+| Report setlist songs not in Master Songs | Lists songs played at a residency that match no Master Songs row, with the closest row when it looks like a spelling difference |
 | Copy megalist into master list (as written) | Appends missing megalist entries verbatim, for hand-cleaning |
 | Find YouTube links now | Runs the search immediately, within the day's quota |
 | Undo selected submissions | Reverts the visitor links in the selected Submissions rows |

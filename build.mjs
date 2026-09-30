@@ -189,7 +189,7 @@ function tracklist(a, root, residencies) {
   a.tracks.forEach((t, i) => {
     const d = t['date'] || '';
     if (!days.length || days[days.length - 1].date !== d) days.push({ date: d, items: [] });
-    const playedAt = a.gig || !residencies ? null : residencies.get(masterKey(t['artist'], t['song title']));
+    const playedAt = a.gig || !residencies ? null : residencies.get(songId(t));
     days[days.length - 1].items.push(trackItem(t, i, playedAt, root));
   });
   const multi = a.dates.length > 1;
@@ -260,9 +260,9 @@ function variantKey(title) {
   return parts.join(' ').toLowerCase().replace(/[^a-z0-9]+/g, '');
 }
 
-// Punctuation and brackets are ignored when grouping, so "(Soulwax Remix)" and
+// Accents, punctuation and brackets are ignored when grouping, so "(Soulwax Remix)" and
 // "Soulwax Remix" are one song.
-const normalize = v => String(v || '').toLowerCase()
+const normalize = v => String(v || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
   .replace(/\bfeat(uring)?\.?\b[^)\]]*/g, ' ')
   .replace(/\band\b/g, '&')
   .replace(/\bthe\b/g, ' ')
@@ -275,7 +275,11 @@ const songKey = t => `${normalize(t['artist'])}|${normalize(baseTitle(t['song ti
 const masterKey = (artist, title) =>
   `${normalize(artist)}|${normalize(stripTag(displayTitle(title), DEFINITIVE_TAG))}`;
 
-// Every residency each song was played at, newest first: song key → [{ label, path }].
+// Which song a track is: the Master Songs row the sheet script matched it to (so any
+// spelling of the artist counts), or the song key if it isn't in Master Songs.
+const songId = t => t['master row'] || masterKey(t['artist'], t['song title']);
+
+// Every residency each song was played at, newest first: song id → [{ label, path }].
 // Worked out from the setlists at every build, so a new gig is included automatically.
 // Residencies too small to have a page are listed without a link.
 function residencyIndex(apps, byGid, list) {
@@ -291,7 +295,7 @@ function residencyIndex(apps, byGid, list) {
     const seen = new Set();
     (byGid[g.gid] || []).forEach(t => {
       if (!t['song title'] || isUnknown(t['song title'])) return;
-      const k = masterKey(t['artist'], t['song title']);
+      const k = songId(t);
       if (seen.has(k)) return; // first time it was played at this gig
       seen.add(k);
       const path = page ? `sets/${page.slug}/#t-${slugify(t['unique id'])}` : '';
@@ -465,7 +469,7 @@ function allSongsPlain(list, source, residencies = new Map()) {
   const ranked = source
     .filter(t => t['song title'] && !(isUnknown(t['artist']) && isUnknown(t['song title'])))
     .map(t => {
-      const playedAt = residencies.get(masterKey(t['artist'], t['song title'])) || [];
+      const playedAt = residencies.get(t['unique id']) || residencies.get(masterKey(t['artist'], t['song title'])) || [];
       return {
         track: t, title: String(t['song title']).trim(),
         plays: playedAt.length || parseFloat(t['plays'] || 0) || 0, versions: 1,

@@ -51,7 +51,8 @@ const CONFIG = {
   MASTER_HEADERS: ['Artist', 'Title', 'YouTube', 'Residencies', 'Notes'],
   APPEARANCES: 'Appearances',
   // Master link: the Master Songs link in effect at the last sync, so an edit to it can be spotted.
-  TRACK_HEADERS: ['Appearance', 'gid', 'Unique ID', 'Artist', 'Song Title', 'Status', 'YouTube', 'Date', 'Position', 'Plays', 'Master link'],
+  // Master row: which Master Songs row (e.g. "master-12") this track is, for the All songs page.
+  TRACK_HEADERS: ['Appearance', 'gid', 'Unique ID', 'Artist', 'Song Title', 'Status', 'YouTube', 'Date', 'Position', 'Plays', 'Master link', 'Master row'],
   APPEARANCE_HEADERS: ['Tab', 'gid', 'City', 'Year', 'Event', 'Order', 'Slug'],
 
   // Which gig each city tab is, by the number at the start of the tab name.
@@ -97,6 +98,7 @@ function onOpen() {
     .addItem('Report megalist duplicates', 'reportMegalistDuplicates')
     .addItem('Report shared links', 'reportSharedLinks')
     .addItem('Report All songs without links', 'reportMissingMasterLinks')
+    .addItem('Report setlist songs not in Master Songs', 'reportUnmatchedSetlistSongs')
     .addItem('Report Master Songs duplicates', 'reportMasterDuplicates')
     .addItem('Apply Master Songs Duplicates tab', 'applyMasterDuplicates')
     .addSeparator()
@@ -461,7 +463,10 @@ function syncFromSource() {
     const masterEdited = (p, url) => !!p && prevMasterLink(p) !== null && prevMasterLink(p) !== url;
     let mastered = 0;
     out.forEach(r => {
-      const url = master.links[masterKey_(r[T.Artist], r[T['Song Title']])];
+      const mi = master.match(r[T.Artist], r[T['Song Title']]);
+      if (mi < 0) return;
+      r[T['Master row']] = `master-${mi + 1}`;
+      const url = master.rows[mi].url;
       if (!url) return;
       r[T['Master link']] = url;
       // A visitor's link stays, unless you've changed this song's Master Songs link since.
@@ -514,14 +519,12 @@ function syncFromSource() {
     const byMaster = {};
     out.forEach(r => {
       const u = String(r[T.YouTube]).trim();
-      if (u && r[T.gid] !== 'master' && !isUnknown_(r[T['Song Title']])) {
-        const k = masterKey_(r[T.Artist], r[T['Song Title']]);
-        if (!byMaster[k]) byMaster[k] = u;
-      }
+      const k = r[T['Master row']];
+      if (u && k && r[T.gid] !== 'master' && !byMaster[k]) byMaster[k] = u;
     });
     masterRows.forEach(r => {
       if (String(r[T.YouTube]).trim()) return;
-      const shared = byMaster[masterKey_(r[T.Artist], r[T['Song Title']])];
+      const shared = byMaster[r[T['Unique ID']]];
       const p = r.prev;
       const prevUrl = p ? String(p[T.YouTube]).trim() : '';
       if (shared) { r[T.YouTube] = shared; r[T.Status] = CONFIG.STATUS.FOUND; }
@@ -728,7 +731,7 @@ function baseTitle_(title) {
   return stripTag_(stripTag_(noYear || String(title || '').trim(), STRIP_TAG_), DEFINITIVE_TAG_);
 }
 
-const normSong_ = v => String(v || '').toLowerCase()
+const normSong_ = v => String(v || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
   .replace(/\bfeat(uring)?\.?\b[^)\]]*/g, ' ')
   .replace(/\band\b/g, '&')
   .replace(/\bthe\b/g, ' ')
@@ -771,7 +774,9 @@ function buildMasterList() {
 
   const seen = seenSongs_(songs, have);
   const today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'MM/dd/yyyy');
-  const newKeys = Object.keys(songs).filter(k => !have[k] && !seen.has(k));
+  const master = masterList_(); // also catches a song already listed under another spelling
+  const newKeys = Object.keys(songs).filter(k => !have[k] && !seen.has(k) &&
+    master.match(songs[k].artist, songs[k].title) < 0);
   const added = newKeys.map(k => songs[k])
     .sort((a, b) => (Object.keys(b.gigs).length - Object.keys(a.gigs).length) ||
                      a.artist.localeCompare(b.artist))
@@ -821,18 +826,81 @@ function addedNote_(song, today) {
 
 const masterKey_ = (artist, title) => `${normSong_(artist)}|${normSong_(baseTitle_(title))}`;
 
-// The master list's links, applied to every track that matches. Also returns the rows
-// themselves, so the site's All songs page can be built from this list.
+// The master list's rows, for the site's All songs page, and match(artist, title), which
+// says which row a setlist track is (-1 for none). A track matches a row with the same
+// song (as the site merges them), or failing that the same title and an artist that looks
+// alike ("Bilgeri" and "Reinhold Bilgeri"), so a row can be spelled however you like.
 function masterList_() {
   const sh = SpreadsheetApp.getActive().getSheetByName(CONFIG.MASTER);
-  if (!sh) return { links: {}, rows: [] };
+  if (!sh) return { rows: [], match: () => -1 };
   const rows = rows_(sh)
     .map(r => ({ artist: String(r[0]).trim(), title: String(r[1]).trim(),
                  url: String(r[2]).trim(), plays: String(r[3]).trim() }))
     .filter(r => r.artist || r.title);
-  const links = {};
-  rows.forEach(r => { if (r.url) links[masterKey_(r.artist, r.title)] = r.url; });
-  return { links: links, rows: rows };
+  const exact = {}, byTitle = {};
+  rows.forEach((r, i) => {
+    const k = masterKey_(r.artist, r.title);
+    if (!(k in exact)) exact[k] = i;
+    const t = normSong_(baseTitle_(r.title));
+    (byTitle[t] = byTitle[t] || []).push({ i: i, names: artistNames_(r.artist) });
+  });
+  const match = (artist, title) => {
+    if (!String(title || '').trim() || isUnknown_(title)) return -1;
+    const k = masterKey_(artist, title);
+    if (k in exact) return exact[k];
+    const names = artistNames_(artist);
+    const hit = (byTitle[normSong_(baseTitle_(title))] || []).find(c => artistsAlike_(names, c.names));
+    return hit ? hit.i : -1;
+  };
+  return { rows: rows, match: match };
+}
+
+// Writes a "Setlist Songs Not In Master" tab: songs played at a residency that don't match
+// any Master Songs row, so they aren't on the All songs page and don't get its links. Most
+// are new songs (Add new songs to Master Songs adds them) or a title written differently
+// from your row ("Smokestack Lightning" / "Smokestack Lightnin'"): the Closest row column
+// suggests which, so you can fix the spelling in Master Songs. Read-only.
+function reportUnmatchedSetlistSongs() {
+  const tracks = SpreadsheetApp.getActive().getSheetByName(CONFIG.TRACKS);
+  if (!tracks) { SpreadsheetApp.getUi().alert('Run a sync first.'); return; }
+  const master = masterList_();
+  const songs = {}, order = [];
+  rows_(tracks).forEach(r => {
+    const tab = String(r[T.Appearance]).trim();
+    const artist = String(r[T.Artist]).trim(), title = String(r[T['Song Title']]).trim();
+    if (!CONFIG.CITY_TAB.test(tab) || !title || isUnknown_(title)) return;
+    if (master.match(artist, title) >= 0) return;
+    const k = masterKey_(artist, title);
+    if (!songs[k]) { songs[k] = { artist: artist, title: title, gigs: [] }; order.push(k); }
+    if (songs[k].gigs.indexOf(tab) < 0) songs[k].gigs.push(tab);
+  });
+
+  // Closest row: an alike artist whose title starts the same way or is one or two letters off.
+  const rows = master.rows.map((m, i) => ({ m: m, row: i + 2, names: artistNames_(m.artist),
+    t: normSong_(baseTitle_(m.title)) }));
+  const closest = s => {
+    const names = artistNames_(s.artist), t = normSong_(baseTitle_(s.title));
+    const c = rows.find(x => artistsAlike_(names, x.names) && x.t.length >= 4 && t.length >= 4 &&
+      (x.t.indexOf(t) === 0 || t.indexOf(x.t) === 0 || editDistance_(x.t, t) <= 2));
+    return c ? `Row ${c.row}: ${c.m.artist} – ${c.m.title}` : '';
+  };
+  const gigNo = tab => Number(tab.match(CONFIG.CITY_TAB)[1]);
+  const out = order.map(k => songs[k]).map(s => {
+    const gigs = s.gigs.sort((a, b) => gigNo(b) - gigNo(a));
+    return [s.artist, s.title, gigs.join(', '), closest(s)];
+  }).sort((a, b) => (!a[3] - !b[3]) || (b[2] > a[2] ? 1 : b[2] < a[2] ? -1 : 0));
+
+  const H = ['Artist', 'Title', 'Played at', 'Closest Master Songs row'];
+  const sh = sheet_('Setlist Songs Not In Master', H);
+  sh.clear();
+  sh.getRange(1, 1, 1, H.length).setValues([H]).setFontWeight('bold');
+  sh.setFrozenRows(1);
+  if (out.length) sh.getRange(2, 1, out.length, H.length).setNumberFormat('@').setValues(out);
+  SpreadsheetApp.getActive().setActiveSheet(sh);
+  const near = out.filter(r => r[3]).length;
+  SpreadsheetApp.getUi().alert(`${out.length} setlist songs don't match a Master Songs row. ` +
+    `${near} look like a row you already have, written differently (listed first). ` +
+    'Fix the spelling in Master Songs, or use Add new songs to Master Songs for the rest.');
 }
 
 /* ---------- Master Songs duplicates ---------- */
@@ -921,7 +989,7 @@ function artistNames_(artist) {
   const whole = normArtist_(artist);
   return whole && parts.indexOf(whole) < 0 ? parts.concat(whole) : parts;
 }
-const normArtist_ = v => String(v || '').toLowerCase().replace(/^\s*the\s+/, '').replace(/[^a-z0-9]+/g, '');
+const normArtist_ = v => String(v || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/^\s*the\s+/, '').replace(/[^a-z0-9]+/g, '');
 
 function artistsAlike_(a, b) {
   return a.some(x => b.some(y => x === y ||
