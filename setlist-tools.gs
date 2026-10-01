@@ -1037,7 +1037,8 @@ function editDistance_(a, b) {
 
 // Makes Master Songs match your cleanup in the Master Songs Duplicates tab: rows you deleted
 // from the tab are deleted from Master Songs, and Artist / Title / YouTube edits to the rows
-// you kept are copied over (Residencies and Notes are left alone). Checks first that Master
+// you kept are copied over (Residencies and Notes are left alone). A song with no row left
+// in the tab is skipped, so a song is never deleted completely. Checks first that Master
 // Songs hasn't changed since the report was made, and asks before changing anything.
 // Undo with File → Version history if needed.
 function applyMasterDuplicates() {
@@ -1067,21 +1068,25 @@ function applyMasterDuplicates() {
     return;
   }
 
-  const del = [], edits = [], dropped = [];
+  // A song with no row left in the tab is skipped, never deleted outright: every song keeps
+  // at least one row.
+  const del = [], edits = [], skipped = [];
   dupes.forEach((g, i) => {
     const keep = kept[i + 1] || [];
-    if (!keep.length) dropped.push(`${g[0].artist} – ${g[0].title}`);
+    if (!keep.length) { skipped.push(`${g[0].artist} – ${g[0].title}`); return; }
     g.forEach(r => {
       const k = keep.find(x => x.row === r.row);
       if (!k) { del.push(r.row); return; }
       if (k.artist !== r.artist || k.title !== r.title || k.url !== r.url) edits.push(k);
     });
   });
-  if (!del.length && !edits.length) { ui.alert('Nothing to apply: Master Songs already matches the tab.'); return; }
+  const skipNote = skipped.length
+    ? `\n\nSkipped, because the tab has no row left for them (keep one row per song): ${skipped.join('; ')}.` : '';
+  if (!del.length && !edits.length) { ui.alert('Nothing to apply: Master Songs already matches the tab.' + skipNote); return; }
 
   const ok = ui.alert('Apply the cleanup to Master Songs?',
     `This deletes ${del.length} rows and updates ${edits.length} rows in Master Songs.` +
-    (dropped.length ? `\n\nNo row was kept for: ${dropped.join('; ')}. All of its rows will be deleted.` : '') +
+    skipNote +
     '\n\nYou can undo it with File → Version history.', ui.ButtonSet.OK_CANCEL);
   if (ok !== ui.Button.OK) return;
 
