@@ -49,7 +49,8 @@ const CONFIG = {
   // Your own hand-curated song list. One row per song; its links win everywhere.
   MASTER: 'Master Songs',
   // Also matches: other titles setlists use for this song, separated by | (e.g. "Sports Man").
-  MASTER_HEADERS: ['Artist', 'Title', 'YouTube', 'Residencies', 'Notes', 'Also matches'],
+  // Current link: the link the site is using for the song, written by the sync (read-only).
+  MASTER_HEADERS: ['Artist', 'Title', 'YouTube', 'Residencies', 'Notes', 'Also matches', 'Current link'],
   APPEARANCES: 'Appearances',
   // Master link: the Master Songs link in effect at the last sync, so an edit to it can be spotted.
   // Master row: which Master Songs row (e.g. "master-12") this track is, for the All songs page.
@@ -544,6 +545,7 @@ function syncFromSource() {
       // Plain text, so IDs like "007" and titles like "3/5" aren't turned into numbers or dates
       tracks.getRange(2, 1, out.length, H.length).setNumberFormat('@').setValues(out);
     }
+    writeCurrentLinks_(master.rows, masterRows);
 
     rebuildAppearances_(tabs, years, tabDates);
     PropertiesService.getScriptProperties().setProperty('lastSync',
@@ -781,7 +783,7 @@ function buildMasterList() {
   const added = newKeys.map(k => songs[k])
     .sort((a, b) => (Object.keys(b.gigs).length - Object.keys(a.gigs).length) ||
                      a.artist.localeCompare(b.artist))
-    .map(s => [s.artist, s.title, s.url, Object.keys(s.gigs).length, addedNote_(s, today)]);
+    .map(s => [s.artist, s.title, s.url, Object.keys(s.gigs).length, addedNote_(s, today), '', '']);
 
   if (added.length) {
     sh.getRange(sh.getLastRow() + 1, 1, added.length, CONFIG.MASTER_HEADERS.length)
@@ -841,7 +843,7 @@ function masterList_() {
     sh.getRange(1, ALSO + 1).setValue('Also matches').setFontWeight('bold'); // add the column header once
   }
   const rows = rows_(sh)
-    .map(r => ({ artist: String(r[0]).trim(), title: String(r[1]).trim(),
+    .map((r, i) => ({ sheetRow: i + 2, artist: String(r[0]).trim(), title: String(r[1]).trim(),
                  url: String(r[2]).trim(), plays: String(r[3]).trim(),
                  also: String(r[ALSO] || '').split(/\s*[|\n]\s*/).map(t => t.trim()).filter(Boolean) }))
     .filter(r => r.artist || r.title);
@@ -863,6 +865,19 @@ function masterList_() {
     return hit ? hit.i : -1;
   };
   return { rows: rows, match: match };
+}
+
+// Fills Master Songs' Current link column with the link the site is using for each song:
+// your YouTube link, a visitor's fix, or one found by the search. It is rewritten every
+// sync, so edit the YouTube column instead; nothing reads this column back.
+function writeCurrentLinks_(rows, masterRows) {
+  const sh = SpreadsheetApp.getActive().getSheetByName(CONFIG.MASTER);
+  if (!sh || !rows.length) return;
+  const col = CONFIG.MASTER_HEADERS.indexOf('Current link') + 1;
+  sh.getRange(1, col).setValue('Current link').setFontWeight('bold');
+  const links = new Array(sh.getLastRow() - 1).fill('').map(() => ['']);
+  rows.forEach((m, i) => { links[m.sheetRow - 2][0] = String(masterRows[i][T.YouTube] || '').trim(); });
+  sh.getRange(2, col, links.length, 1).setValues(links);
 }
 
 // Writes a "Setlist Songs Not In Master" tab: songs played at a residency that don't match

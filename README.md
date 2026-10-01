@@ -141,10 +141,12 @@ Most things happen on their own:
 
 ### The master song list (Master Songs tab)
 
-One row per song: Artist, Title, YouTube, Residencies, Notes, Also matches. **Also matches** holds
+One row per song: Artist, Title, YouTube, Residencies, Notes, Also matches, Current link. **Also matches** holds
 other titles setlists use for the song, separated by `|` (e.g. `Sports Man` on the "Sports Men" row),
-so a setlist's misspelling still counts as your row. It is yours — the hourly sync
-never overwrites it — and it does two jobs:
+so a setlist's misspelling still counts as your row. **Current link** shows the link the site is
+using for the song (yours, a visitor's fix, or one the search found); the sync rewrites it, so
+change a link in the YouTube column, not there. The rest is yours — the hourly sync never
+overwrites it — and it does two jobs:
 
 1. **Supplies links everywhere.** A master link beats the automatic search and links fans add
    in the community sheet. Matched tracks show **Master** in Tracks. A link a visitor submits
