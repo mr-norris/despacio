@@ -141,7 +141,9 @@ Most things happen on their own:
 
 ### The master song list (Master Songs tab)
 
-One row per song: Artist, Title, YouTube, Residencies, Notes. It is yours — the hourly sync
+One row per song: Artist, Title, YouTube, Residencies, Notes, Also matches. **Also matches** holds
+other titles setlists use for the song, separated by `|` (e.g. `Sports Man` on the "Sports Men" row),
+so a setlist's misspelling still counts as your row. It is yours — the hourly sync
 never overwrites it — and it does two jobs:
 
 1. **Supplies links everywhere.** A master link beats the automatic search and links fans add

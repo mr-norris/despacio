@@ -48,7 +48,8 @@ const CONFIG = {
   TRACKS: 'Tracks',
   // Your own hand-curated song list. One row per song; its links win everywhere.
   MASTER: 'Master Songs',
-  MASTER_HEADERS: ['Artist', 'Title', 'YouTube', 'Residencies', 'Notes'],
+  // Also matches: other titles setlists use for this song, separated by | (e.g. "Sports Man").
+  MASTER_HEADERS: ['Artist', 'Title', 'YouTube', 'Residencies', 'Notes', 'Also matches'],
   APPEARANCES: 'Appearances',
   // Master link: the Master Songs link in effect at the last sync, so an edit to it can be spotted.
   // Master row: which Master Songs row (e.g. "master-12") this track is, for the All songs page.
@@ -830,20 +831,29 @@ const masterKey_ = (artist, title) => `${normSong_(artist)}|${normSong_(baseTitl
 // says which row a setlist track is (-1 for none). A track matches a row with the same
 // song (as the site merges them), or failing that the same title and an artist that looks
 // alike ("Bilgeri" and "Reinhold Bilgeri"), so a row can be spelled however you like.
+// Titles in a row's Also matches column count as that row's title too, for setlists that
+// write the song differently ("Sports Man" for "Sports Men").
 function masterList_() {
   const sh = SpreadsheetApp.getActive().getSheetByName(CONFIG.MASTER);
   if (!sh) return { rows: [], match: () => -1 };
+  const ALSO = CONFIG.MASTER_HEADERS.indexOf('Also matches');
+  if (sh.getLastColumn() <= ALSO || !String(sh.getRange(1, ALSO + 1).getValue()).trim()) {
+    sh.getRange(1, ALSO + 1).setValue('Also matches').setFontWeight('bold'); // add the column header once
+  }
   const rows = rows_(sh)
     .map(r => ({ artist: String(r[0]).trim(), title: String(r[1]).trim(),
-                 url: String(r[2]).trim(), plays: String(r[3]).trim() }))
+                 url: String(r[2]).trim(), plays: String(r[3]).trim(),
+                 also: String(r[ALSO] || '').split(/\s*[|\n]\s*/).map(t => t.trim()).filter(Boolean) }))
     .filter(r => r.artist || r.title);
   const exact = {}, byTitle = {};
-  rows.forEach((r, i) => {
-    const k = masterKey_(r.artist, r.title);
+  const add = (r, i, title) => {
+    const k = masterKey_(r.artist, title);
     if (!(k in exact)) exact[k] = i;
-    const t = normSong_(baseTitle_(r.title));
+    const t = normSong_(baseTitle_(title));
     (byTitle[t] = byTitle[t] || []).push({ i: i, names: artistNames_(r.artist) });
-  });
+  };
+  rows.forEach((r, i) => add(r, i, r.title));                       // real titles win,
+  rows.forEach((r, i) => r.also.forEach(title => add(r, i, title))); // then Also matches
   const match = (artist, title) => {
     if (!String(title || '').trim() || isUnknown_(title)) return -1;
     const k = masterKey_(artist, title);
